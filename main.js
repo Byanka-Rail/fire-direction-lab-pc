@@ -6,6 +6,7 @@ const { app, BrowserWindow, Menu, dialog, net, protocol, session, shell } = requ
 const path = require('path');
 const { pathToFileURL } = require('url');
 const fs = require('fs');
+const os = require('os');
 const U = require('./updater');
 
 const REPO_PAGE = 'https://github.com/Byanka-Rail/fire-direction-lab-pc';
@@ -33,6 +34,19 @@ const blocked = [];   // 화면이 밖으로 내려다 막힌 주소(시험 기�
 const dataDir = () => path.join(app.getPath('userData'), 'game');
 const bundledDir = () => (app.isPackaged ? path.join(process.resourcesPath, 'game') : path.join(__dirname, 'game'));
 const verText = () => (st.current ? 'v' + st.current.version : '');
+
+// 기록 — %APPDATA%\FIRE DIRECTION LAB\log.txt (도움말 → 저장 폴더 열기). 화면이 안 뜰 때 무엇이 막혔는지 남긴다
+function log(...a) {
+  const line = new Date().toISOString() + ' ' + a.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ') + '\n';
+  try {
+    const f = path.join(app.getPath('userData'), 'log.txt');
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    if (fs.existsSync(f) && fs.statSync(f).size > 256 * 1024) fs.renameSync(f, f + '.old');
+    fs.appendFileSync(f, line);
+  } catch (e) {}
+  if (T.smoke || T.answer) process.stdout.write('[fdl] ' + line);
+}
+const trace = { failLoads: [], gone: [], consoleErrors: [], paint: null, gpu: null };
 
 function setTitle() { if (win) win.setTitle('FIRE DIRECTION LAB · ' + verText()); }
 
@@ -98,7 +112,7 @@ function buildMenu() {
       { id: 'check', label: '업데이트 확인', click: () => checkUpdate(true) },
       { id: 'rollback', label: hasBackup ? '이전 판으로 되돌리기 (v' + st.backup.version + ')' : '이전 판으로 되돌리기', enabled: hasBackup, click: confirmRollback },
       { type: 'separator' },
-      { label: '다시 불러오기', accelerator: 'CmdOrCtrl+R', click: () => win && win.webContents.reloadIgnoringCache() },
+      { label: '다시 불러오기', accelerator: 'CmdOrCtrl+R', click: () => { if (!win) return; shownError = false; win.loadURL(GAME_URL); } },
       { label: '전체 화면', role: 'togglefullscreen' },
       { type: 'separator' },
       { label: '종료', role: 'quit' },
@@ -154,10 +168,60 @@ function createWindow() {
     e.preventDefault();
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
   });
-  wc.on('render-process-gone', (e, d) => console.error('[fdl] renderer gone', d && d.reason));
+  wc.on('render-process-gone', (e, d) => { trace.gone.push({ renderer: d && d.reason }); log('renderer gone', d); });
+  wc.on('unresponsive', () => log('renderer unresponsive'));
+  wc.on('did-fail-load', (e, code, desc, url, isMain) => {
+    trace.failLoads.push({ code, desc, url: String(url).slice(0, 200), isMain });
+    log('did-fail-load', { code, desc, url, isMain });
+    if (isMain && code !== -3 && !T.smoke && !shownError) showLoadError(code + ' ' + desc);
+  });
+  wc.on('console-message', (ev, level, message, line, source) => {
+    const L = typeof level === 'number' ? level : ev.level;
+    const M = String(message !== undefined ? message : ev.message);
+    const at = (source !== undefined ? source : ev.sourceId) + ':' + (line !== undefined ? line : ev.lineNumber);
+    if ((L === 3 || L === 'error') && trace.consoleErrors.length < 20) {
+      trace.consoleErrors.push(M.slice(0, 300) + ' @' + at);
+      log('console error', M.slice(0, 300), '@' + at);
+    }
+  });
+  wc.on('did-finish-load', () => {
+    log('did-finish-load', wc.getURL().slice(0, 80));
+    setTimeout(() => paintCheck(wc), 3000);
+  });
   if (T.smoke) smokeTest(wc);
   win.loadURL(GAME_URL);
   wc.once('did-finish-load', () => { if (!T.smoke) setTimeout(() => checkUpdate(false), 1500); });
+}
+
+// 화면에 실제로 그려졌는지 — 창을 한 장 찍어 밝기의 퍼짐을 잰다(한 색이면 0에 가깝다)
+async function paintCheck(wc) {
+  try {
+    const img = await wc.capturePage();
+    const sz = img.getSize(), bm = img.toBitmap();
+    let s = 0, s2 = 0, n = 0;
+    for (let i = 0; i + 3 < bm.length; i += 4 * 97) { const g = bm[i] + bm[i + 1] + bm[i + 2]; s += g; s2 += g * g; n++; }
+    trace.paint = { w: sz.width, h: sz.height, std: n ? Math.round(Math.sqrt(Math.max(0, s2 / n - (s / n) ** 2))) : -1 };
+  } catch (e) { trace.paint = { error: String(e) }; }
+  try { trace.gpu = app.getGPUFeatureStatus(); } catch (e) {}
+  try {
+    trace.dom = await wc.executeJavaScript(`({ lab: window.LAB_VERSION || null, eof: window.__LAB_EOF === 1, start: !!document.getElementById('startBtn'),
+      bodyH: document.body ? document.body.scrollHeight : -1, vis: document.body ? getComputedStyle(document.body).visibility : '' })`);
+  } catch (e) { trace.dom = { error: String(e) }; }
+  log('paint', trace.paint, 'dom', trace.dom, 'gpu', trace.gpu);
+}
+
+let shownError = false;
+function showLoadError(why) {
+  shownError = true;
+  const logPath = path.join(app.getPath('userData'), 'log.txt');
+  const esc = t => String(t).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const html = '<!doctype html><meta charset="utf-8"><body style="background:#071018;color:#eef5fa;font:15px system-ui,sans-serif;padding:32px;line-height:1.6">'
+    + '<h2 style="margin:0 0 12px">게임 화면을 열지 못했습니다</h2>'
+    + '<div>오류: ' + esc(why) + '</div>'
+    + '<div>게임 파일: ' + esc(U.files(dataDir()).current) + '</div>'
+    + '<div>기록: ' + esc(logPath) + '</div>'
+    + '<div style="margin-top:12px;color:#bccbd5">«도움말 → 저장 폴더 열기»에서 log.txt 를 보내 주세요. «게임 → 다시 불러오기»로 다시 시도합니다.</div></body>';
+  win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
 }
 
 // 시험: 판이 뜨는지 · 저장이 되는지 · GitHub 의 update.json 을 읽는지 적고 끝낸다 (CI 의 Windows 에서 돌린다)
@@ -182,7 +246,11 @@ function smokeTest(wc) {
     } catch (e) { out.evalError = String(e); }
     try { const m = await U.fetchManifest(net.fetch, RAW_BASE); out.manifest = { version: m.version, build: m.build }; }
     catch (e) { out.manifestError = e.message; }
-    out.ok = !!(out.labVersion && out.eof && out.storage === 'ok' && out.origin === ORIGIN && out.startBtn && !errors.length);
+    if (!trace.paint) await paintCheck(wc);
+    Object.assign(out, { paint: trace.paint, gpu: trace.gpu, failLoads: trace.failLoads, gone: trace.gone, userData: app.getPath('userData'),
+      electron: process.versions.electron, os: os.release() });
+    out.ok = !!(out.labVersion && out.eof && out.storage === 'ok' && out.origin === ORIGIN && out.startBtn && !errors.length
+      && out.paint && out.paint.std > 8);
     fs.writeFileSync(T.smoke, JSON.stringify(out, null, 2));
     app.quit();
   });
@@ -191,17 +259,29 @@ function smokeTest(wc) {
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.on('window-all-closed', () => app.quit());
 
+app.on('child-process-gone', (e, d) => { trace.gone.push(d); log('child-process-gone', d); });
+
 app.whenReady().then(() => {
   if (!gotLock) return;
+  log('start', { app: app.getVersion(), electron: process.versions.electron, os: os.release(), arch: process.arch,
+    packaged: app.isPackaged, userData: app.getPath('userData'), exe: process.execPath });
   try { st = U.prepareBundled(dataDir(), bundledDir()); }
-  catch (e) { dialog.showErrorBox('FIRE DIRECTION LAB', '게임 파일 준비 실패\n' + e.message); app.quit(); return; }
+  catch (e) { log('prepare failed', String(e && e.stack || e)); dialog.showErrorBox('FIRE DIRECTION LAB', '게임 파일 준비 실패\n' + e.message); app.quit(); return; }
+  log('game', st.current, 'backup', st.backup || null);
 
   protocol.handle('fdl', req => {
     const u = new URL(req.url);
     if (u.host === 'app' && (u.pathname === '/game.html' || u.pathname === '/')) {
       try {
         // 파일 읽기는 크롬 쪽(net.fetch file://)에 맡긴다 — Buffer 로 넘기면 4 MB 판의 끝 64 KB 토막이 가끔 잘렸다(계측: 12번 중 7번 · 줄 23564에서 SyntaxError)
-        return net.fetch(pathToFileURL(U.files(dataDir()).current).toString(), { cache: 'no-store' });
+        const fileUrl = pathToFileURL(U.files(dataDir()).current).toString();
+        return net.fetch(fileUrl, { cache: 'no-store' }).then(r => {
+          log('game served', r.status, fileUrl);
+          return r;
+        }, e => {
+          log('game read failed', fileUrl, String(e));
+          return new Response('게임 파일 읽기 실패: ' + e.message, { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+        });
       } catch (e) {
         return new Response('게임 파일 읽기 실패: ' + e.message, { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
       }

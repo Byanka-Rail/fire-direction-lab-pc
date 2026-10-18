@@ -15,6 +15,7 @@ on:
       - 'build/**'
       - '.github/workflows/build-windows.yml'
       - '.github/release-notes.md'
+      - '.github/smoke.ps1'
 
 permissions:
   contents: write
@@ -45,17 +46,27 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Smoke test on Windows (game loads, saves work, GitHub update.json readable)
+      - name: Smoke test on Windows (game loads and paints, saves work, GitHub update.json readable)
         shell: pwsh
         run: |
-          $env:FDL_SMOKE = "$env:RUNNER_TEMP\smoke.json"
-          $env:FDL_USERDATA = "$env:RUNNER_TEMP\fdl-userdata"
-          $p = Start-Process -FilePath "dist\win-unpacked\FIRE DIRECTION LAB.exe" -PassThru
-          $p | Wait-Process -Timeout 120
-          Get-Content $env:FDL_SMOKE
-          $s = Get-Content $env:FDL_SMOKE | ConvertFrom-Json
-          if (-not $s.ok) { throw "smoke test failed" }
-          if (-not $s.manifest) { throw "update.json not readable: $($s.manifestError)" }
+          $fail = 0
+          $u = "dist\win-unpacked\FIRE DIRECTION LAB.exe"
+          # ① 빌드 폴더 그대로 · 임시 저장 폴더
+          & .github\smoke.ps1 -Name 'unpacked' -Exe $u -UserData "$env:RUNNER_TEMP\fdl-userdata"; if ($LASTEXITCODE) { $fail++ }
+          # ② 기본 저장 폴더(%APPDATA%\FIRE DIRECTION LAB — 띄어쓰기 있는 경로)
+          & .github\smoke.ps1 -Name 'default-appdata' -Exe $u; if ($LASTEXITCODE) { $fail++ }
+          # ③ 한글 · 띄어쓰기 경로
+          & .github\smoke.ps1 -Name 'korean-path' -Exe $u -UserData "$env:RUNNER_TEMP\사용자 재열\FIRE DIRECTION LAB"; if ($LASTEXITCODE) { $fail++ }
+          # ④ 설치판을 실제로 설치(/S)하고 설치된 앱
+          $setup = Get-ChildItem dist -Filter 'FIRE_DIRECTION_LAB_Setup_*.exe' | Select-Object -First 1
+          Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
+          $inst = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter 'FIRE DIRECTION LAB.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          Write-Output "installed at: $($inst.FullName)"
+          & .github\smoke.ps1 -Name 'installed' -Exe $inst.FullName; if ($LASTEXITCODE) { $fail++ }
+          # ⑤ 포터블
+          $port = Get-ChildItem dist -Filter 'FIRE_DIRECTION_LAB_Portable_*.exe' | Select-Object -First 1
+          & .github\smoke.ps1 -Name 'portable' -Exe $port.FullName -UserData "$env:RUNNER_TEMP\fdl-portable"; if ($LASTEXITCODE) { $fail++ }
+          if ($fail) { throw "$fail smoke variant(s) failed" }
 
       - name: Version and release notes
         id: ver
