@@ -24,6 +24,11 @@ protocol.registerSchemesAsPrivileged([{
   scheme: 'fdl', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, codeCache: true },
 }]);
 
+// 하드웨어 가속 끄기 — 그래픽 드라이버 탓에 창이 바탕색만 뜨는 PC 용(«보기 → 하드웨어 가속 끄기», 다시 시작해야 걸린다)
+const noGpu = (() => { try { return U.loadState(path.join(app.getPath('userData'), 'game')).noGpu === true; } catch (e) { return false; } })()
+  || process.argv.includes('--disable-gpu');
+if (noGpu) app.disableHardwareAcceleration();
+
 const gotLock = app.requestSingleInstanceLock();   // 두 번 켜면 처음 창으로
 if (!gotLock) app.quit();
 
@@ -104,6 +109,18 @@ async function confirmRollback() {
   win.webContents.reloadIgnoringCache();
 }
 
+async function toggleGpu(item) {
+  st.noGpu = !!item.checked;
+  U.saveState(dataDir(), st);
+  log('noGpu set', st.noGpu);
+  const r = await ask({
+    type: 'question', title: '하드웨어 가속', buttons: ['지금 다시 시작', '나중에'],
+    message: st.noGpu ? '하드웨어 가속을 끕니다' : '하드웨어 가속을 켭니다',
+    detail: '다시 시작해야 적용됩니다. 저장은 그대로입니다.',
+  });
+  if (r === 0) { app.relaunch(); app.exit(0); }
+}
+
 // ── 메뉴 ──
 function buildMenu() {
   const hasBackup = !!st.backup && fs.existsSync(U.files(dataDir()).backup);
@@ -121,6 +138,8 @@ function buildMenu() {
       { label: '크게', role: 'zoomIn' },
       { label: '작게', role: 'zoomOut' },
       { label: '원래 크기', role: 'resetZoom' },
+      { type: 'separator' },
+      { id: 'nogpu', label: '하드웨어 가속 끄기 (화면이 안 뜰 때)', type: 'checkbox', checked: noGpu, click: toggleGpu },
     ] },
     { label: '도움말', submenu: [
       { label: '저장 폴더 열기', click: () => shell.openPath(app.getPath('userData')) },
@@ -248,7 +267,7 @@ function smokeTest(wc) {
     catch (e) { out.manifestError = e.message; }
     if (!trace.paint) await paintCheck(wc);
     Object.assign(out, { paint: trace.paint, gpu: trace.gpu, failLoads: trace.failLoads, gone: trace.gone, userData: app.getPath('userData'),
-      electron: process.versions.electron, os: os.release() });
+      electron: process.versions.electron, os: os.release(), noGpu });
     out.ok = !!(out.labVersion && out.eof && out.storage === 'ok' && out.origin === ORIGIN && out.startBtn && !errors.length
       && out.paint && out.paint.std > 8);
     fs.writeFileSync(T.smoke, JSON.stringify(out, null, 2));
@@ -264,7 +283,7 @@ app.on('child-process-gone', (e, d) => { trace.gone.push(d); log('child-process-
 app.whenReady().then(() => {
   if (!gotLock) return;
   log('start', { app: app.getVersion(), electron: process.versions.electron, os: os.release(), arch: process.arch,
-    packaged: app.isPackaged, userData: app.getPath('userData'), exe: process.execPath });
+    packaged: app.isPackaged, userData: app.getPath('userData'), exe: process.execPath, noGpu });
   try { st = U.prepareBundled(dataDir(), bundledDir()); }
   catch (e) { log('prepare failed', String(e && e.stack || e)); dialog.showErrorBox('FIRE DIRECTION LAB', '게임 파일 준비 실패\n' + e.message); app.quit(); return; }
   log('game', st.current, 'backup', st.backup || null);
