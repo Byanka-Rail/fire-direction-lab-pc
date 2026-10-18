@@ -34,10 +34,10 @@ FIRE DIRECTION LAB(단일 HTML 게임)을 Windows 프로그램으로 실행한�
 
 **PC 앱 다시 만들기** — 앱 코드가 바뀌었거나 새 설치 파일에 최신 판을 넣고 싶을 때.
 1. `package.json`의 `version`을 올린다(예: 1.0.1).
-2. 같은 이름의 태그 `v1.0.1`을 올린다.
-3. Actions «Build Windows app»이 빌드 → Windows에서 켜 보는 시험 → Releases 등록까지 한다.
+2. main에 올린다.
+3. Actions «Build Windows app»이 빌드 → Windows에서 켜 보는 시험 → `v1.0.1` 태그 · Releases 등록까지 한다.
 
-Actions 탭의 «Run workflow»로 돌리면 Releases 등록 없이 Artifacts에만 남긴다.
+`version`이 이미 릴리스된 값이면 Releases는 그대로 두고 Artifacts에만 남긴다. Actions 탭의 «Run workflow»로도 돌릴 수 있다.
 
 ## 구성
 

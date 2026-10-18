@@ -1,11 +1,20 @@
 name: Build Windows app
 
-# v* 태그를 올리면: 빌드 → Windows 에서 실제로 켜 보는 시험 → Releases 에 설치판 · 포터블을 올린다
-# Actions 탭의 Run workflow 로 돌리면: 빌드 · 시험까지만 하고 Artifacts 에 남긴다
+# main 에 앱 코드가 올라오면(또는 Actions 탭의 Run workflow): 빌드 → Windows 에서 실제로 켜 보는 시험 → Artifacts
+# package.json 의 version 이 처음 보는 값이면 v{version} 태그를 달고 Releases 에 설치판 · 포터블을 올린다
 on:
   workflow_dispatch:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths:
+      - 'main.js'
+      - 'updater.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/**'
+      - 'build/**'
+      - '.github/workflows/build-windows.yml'
+      - '.github/release-notes.md'
 
 permissions:
   contents: write
@@ -16,6 +25,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Node 22
         uses: actions/setup-node@v4
@@ -46,12 +57,15 @@ jobs:
           if (-not $s.ok) { throw "smoke test failed" }
           if (-not $s.manifest) { throw "update.json not readable: $($s.manifestError)" }
 
-      - name: Release notes
+      - name: Version and release notes
+        id: ver
         shell: pwsh
         run: |
           $g = Get-Content game\game.json | ConvertFrom-Json
           $v = (Get-Content package.json | ConvertFrom-Json).version
           (Get-Content .github\release-notes.md -Raw).Replace('{GAME}', $g.version).Replace('{APP}', $v) | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\notes.md"
+          "tag=v$v" >> $env:GITHUB_OUTPUT
+          if (git tag -l "v$v") { "new=false" >> $env:GITHUB_OUTPUT } else { "new=true" >> $env:GITHUB_OUTPUT }
 
       - name: Upload build
         uses: actions/upload-artifact@v4
@@ -59,10 +73,12 @@ jobs:
           name: FIRE_DIRECTION_LAB_Windows
           path: dist/*.exe
 
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish release (new version only)
+        if: steps.ver.outputs.new == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          name: FIRE DIRECTION LAB PC ${{ github.ref_name }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: FIRE DIRECTION LAB PC ${{ steps.ver.outputs.tag }}
           body_path: ${{ runner.temp }}/notes.md
           files: dist/*.exe
