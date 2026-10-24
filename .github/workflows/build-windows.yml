@@ -1,0 +1,95 @@
+name: Build Windows app
+
+# main 에 앱 코드가 올라오면(또는 Actions 탭의 Run workflow): 빌드 → Windows 에서 실제로 켜 보는 시험 → Artifacts
+# package.json 의 version 이 처음 보는 값이면 v{version} 태그를 달고 Releases 에 설치판 · 포터블을 올린다
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'main.js'
+      - 'updater.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/**'
+      - 'build/**'
+      - '.github/workflows/build-windows.yml'
+      - '.github/release-notes.md'
+      - '.github/smoke.ps1'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Fetch latest LAB game (fire-direction-lab update.json)
+        run: node scripts/fetch-game.js
+
+      - name: Build installer and portable exe
+        run: npx electron-builder --win --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Smoke test on Windows (game loads and paints, saves work, GitHub update.json readable)
+        shell: pwsh
+        run: |
+          $fail = 0
+          $u = "dist\win-unpacked\FIRE DIRECTION LAB.exe"
+          # ① 빌드 폴더 그대로 · 임시 저장 폴더
+          & .github\smoke.ps1 -Name 'unpacked' -Exe $u -UserData "$env:RUNNER_TEMP\fdl-userdata"; if ($LASTEXITCODE) { $fail++ }
+          # ② 기본 저장 폴더(%APPDATA%\FIRE DIRECTION LAB — 띄어쓰기 있는 경로)
+          & .github\smoke.ps1 -Name 'default-appdata' -Exe $u; if ($LASTEXITCODE) { $fail++ }
+          # ③ 한글 · 띄어쓰기 경로
+          & .github\smoke.ps1 -Name 'korean-path' -Exe $u -UserData "$env:RUNNER_TEMP\사용자 Byanka\FIRE DIRECTION LAB"; if ($LASTEXITCODE) { $fail++ }
+          # ④ 설치판을 실제로 설치(/S)하고 설치된 앱
+          $setup = Get-ChildItem dist -Filter 'FIRE_DIRECTION_LAB_Setup_*.exe' | Select-Object -First 1
+          Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
+          $inst = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter 'FIRE DIRECTION LAB.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          Write-Output "installed at: $($inst.FullName)"
+          & .github\smoke.ps1 -Name 'installed' -Exe $inst.FullName; if ($LASTEXITCODE) { $fail++ }
+          # ⑤ 포터블
+          $port = Get-ChildItem dist -Filter 'FIRE_DIRECTION_LAB_Portable_*.exe' | Select-Object -First 1
+          & .github\smoke.ps1 -Name 'portable' -Exe $port.FullName -UserData "$env:RUNNER_TEMP\fdl-portable"; if ($LASTEXITCODE) { $fail++ }
+          if ($fail) { throw "$fail smoke variant(s) failed" }
+
+      - name: Version and release notes
+        id: ver
+        shell: pwsh
+        run: |
+          $g = Get-Content game\game.json | ConvertFrom-Json
+          $v = (Get-Content package.json | ConvertFrom-Json).version
+          (Get-Content .github\release-notes.md -Raw).Replace('{GAME}', $g.version).Replace('{APP}', $v) | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\notes.md"
+          "tag=v$v" >> $env:GITHUB_OUTPUT
+          if (git tag -l "v$v") { "new=false" >> $env:GITHUB_OUTPUT } else { "new=true" >> $env:GITHUB_OUTPUT }
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: FIRE_DIRECTION_LAB_Windows
+          path: dist/*.exe
+
+      - name: Publish release (new version only)
+        if: steps.ver.outputs.new == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: FIRE DIRECTION LAB PC ${{ steps.ver.outputs.tag }}
+          body_path: ${{ runner.temp }}/notes.md
+          files: dist/*.exe

@@ -1,0 +1,48 @@
+{
+  "name": "fire-direction-lab-pc",
+  "productName": "FIRE DIRECTION LAB",
+  "version": "1.0.1",
+  "description": "FIRE DIRECTION LAB Windows 앱 — GitHub에서 새 판을 받는다",
+  "main": "main.js",
+  "author": "Byanka-Rail",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "fetch-game": "node scripts/fetch-game.js",
+    "start": "electron .",
+    "dist": "electron-builder --win --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.byankarail.fdl",
+    "productName": "FIRE DIRECTION LAB",
+    "copyright": "Byanka-Rail",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "updater.js", "package.json", "build/icon.png"],
+    "extraResources": [{ "from": "game", "to": "game", "filter": ["game.html", "game.json"] }],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "FIRE DIRECTION LAB",
+      "deleteAppDataOnUninstall": false,
+      "language": "1042",
+      "artifactName": "FIRE_DIRECTION_LAB_Setup_${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "FIRE_DIRECTION_LAB_Portable_${version}.${ext}"
+    },
+    "publish": null
+  }
+}
